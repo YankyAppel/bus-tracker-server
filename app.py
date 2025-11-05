@@ -1,61 +1,79 @@
 from flask import Flask, request
 from flask_cors import CORS
 import logging
+import sys
 import json
 
-# 1. Setup
+# =============================================================================
+# EXTREMELY EXPLICIT LOGGING SETUP
+# This is a last-ditch effort to force logs to appear on Heroku.
+# =============================================================================
 app = Flask(__name__)
-CORS(app) # Enable Cross-Origin Resource Sharing
 
-# Set up basic logging to see output in Heroku logs
+# Configure a handler to write to standard output, which Heroku captures
+handler = logging.StreamHandler(sys.stdout)
+handler.setLevel(logging.INFO)
+app.logger.addHandler(handler)
+app.logger.setLevel(logging.INFO)
+
+# Also add a basic config as a backup
 logging.basicConfig(level=logging.INFO)
 
+# Enable CORS
+CORS(app)
+
+app.logger.info("SERVER CODE STARTED: Logging has been configured.")
+print("SERVER CODE STARTED: This is a print statement.", file=sys.stdout)
+
+
 # This is our simple in-memory "database"
-# It will store the latest location for each bus ID
 bus_locations = {}
 
 
-# 2. Server Routes
+# =============================================================================
+# SERVER ROUTES
+# =============================================================================
 
-# This is the main page, to check if the server is alive
+# Main page to check if the server is alive
 @app.route('/')
 def index():
-    app.logger.info("Root URL '/' was accessed. Server is running.")
-    return "Hello, World! The GPS server is running."
+    app.logger.info("ROOT_URL_ACCESS: '/' was hit.")
+    print("ROOT_URL_ACCESS: '/' was hit via print.", file=sys.stdout)
+    return "Hello, World! The GPS server is running with SUPER LOGGING."
 
-# This is the endpoint where the driver's app will send location data
+# Endpoint where the driver's app will send location data
 @app.route('/location', methods=['POST'])
 def receive_location():
+    app.logger.info("LOCATION_ENDPOINT_HIT: Received a POST request to /location.")
+    print("LOCATION_ENDPOINT_HIT: Received a POST request to /location.", file=sys.stdout)
+    
     try:
         data = request.get_json()
+        if not data:
+            app.logger.error("BAD_REQUEST_ERROR: Request body is not JSON or is empty.")
+            print("BAD_REQUEST_ERROR: Request body is not JSON or is empty.", file=sys.stdout)
+            return "Bad Request: No JSON data received.", 400
+
         bus_id = data.get('bus_id')
         lat = data.get('lat')
         lon = data.get('lon')
 
         if not all([bus_id, lat, lon]):
-            app.logger.warning(f"Incomplete data received: {data}")
-            return "Incomplete data", 400
+            app.logger.error(f"BAD_REQUEST_ERROR: Incomplete data. Received: {data}")
+            print(f"BAD_REQUEST_ERROR: Incomplete data. Received: {data}", file=sys.stdout)
+            return "Bad Request: Incomplete data provided.", 400
 
         # Store the latest location
         bus_locations[bus_id] = {'lat': lat, 'lon': lon}
 
         # Log the received data so we can see it in Heroku logs
-        app.logger.info(f"Received location for Bus {bus_id}: Lat={lat}, Lon={lon}")
-
-        # Also print the entire database for debugging
-        app.logger.info(f"Current bus locations: {json.dumps(bus_locations)}")
-
+        app.logger.info(f"SUCCESS: Received location for Bus {bus_id}: Lat={lat}, Lon={lon}")
+        print(f"SUCCESS: Received location for Bus {bus_id}: Lat={lat}, Lon={lon}", file=sys.stdout)
+        
         return "Location received", 200
 
     except Exception as e:
-        app.logger.error(f"Error processing location request: {e}")
-        return "Server error", 500
-
-# This is the endpoint the parent's SMS will use
-@app.route('/bus_location', methods=['GET'])
-def get_bus_location():
-    # This part is not fully built out yet, but we'll add it later.
-    # For now, it just returns all known data.
-    return jsonify(bus_locations)
-
+        app.logger.critical(f"CRITICAL_SERVER_ERROR: An unexpected error occurred: {e}")
+        print(f"CRITICAL_SERVER_ERROR: An unexpected error occurred: {e}", file=sys.stdout)
+        return "Internal Server Error", 500
 
