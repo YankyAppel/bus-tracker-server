@@ -12,10 +12,13 @@ app.logger.addHandler(handler)
 app.logger.setLevel(logging.INFO)
 
 # --- CORS SETUP ---
-# Allow requests from your specific Netlify domain
-CORS(app, origins=["https://gleaming-brigadeiros-6bbd55.netlify.app"])
+# Allow requests from BOTH of your Netlify domains
+CORS(app, origins=[
+    "https://gleaming-brigadeiros-6bbd55.netlify.app", # Parent App
+    "https://darling-ganache-26a871.netlify.app"      # Driver App
+])
 
-app.logger.info("SERVER CODE STARTED with CORS for Netlify")
+app.logger.info("SERVER CODE STARTED with CORS for BOTH Netlify apps")
 
 # This is our simple in-memory "database"
 bus_locations = {}
@@ -52,7 +55,7 @@ def receive_location():
         app.logger.critical(f"CRITICAL_SERVER_ERROR: An unexpected error occurred: {e}")
         return "Internal Server Error", 500
 
-# --- NEW ROUTE FOR PARENTS ---
+# --- ROUTE FOR PARENTS ---
 @app.route('/get_location', methods=['GET'])
 def get_location():
     bus_id = request.args.get('bus_id')
