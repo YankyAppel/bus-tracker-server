@@ -10,9 +10,12 @@ handler = logging.StreamHandler(sys.stdout)
 handler.setLevel(logging.INFO)
 app.logger.addHandler(handler)
 app.logger.setLevel(logging.INFO)
-CORS(app)
 
-app.logger.info("SERVER CODE STARTED")
+# --- CORS SETUP ---
+# Allow requests from your specific Netlify domain
+CORS(app, origins=["https://gleaming-brigadeiros-6bbd55.netlify.app"])
+
+app.logger.info("SERVER CODE STARTED with CORS for Netlify")
 
 # This is our simple in-memory "database"
 bus_locations = {}
