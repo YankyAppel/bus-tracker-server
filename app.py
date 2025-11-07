@@ -15,7 +15,7 @@ app.logger.setLevel(logging.INFO)
 CORS(app, origins=[
     "https://gleaming-brigadeiros-6bbd55.netlify.app",  # Parent App
     "https://darling-ganache-26a871.netlify.app",       # Driver App
-    "null", # Allow local file testing
+    "https://chimerical-salamander-bf8231.netlify.app", # Allow local file testing
     # We will add the Admin App URL here once it's created
 ])
 
