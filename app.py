@@ -2,6 +2,9 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import logging
 import sys
+import os
+import psycopg2
+from psycopg2 import pool
 
 app = Flask(__name__)
 
@@ -19,54 +22,42 @@ CORS(app, origins=[
     "null"
 ])
 
-app.logger.info("SERVER CODE STARTED - Bus List Endpoints Active")
+# --- Database Connection ---
+try:
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        app.logger.critical("DATABASE_URL environment variable not set.")
+        # This will cause the app to fail to start, which is intended.
+    else:
+        app.db_pool = psycopg2.pool.SimpleConnectionPool(1, 5, dsn=db_url)
+        app.logger.info("Database connection pool created successfully.")
 
-# --- In-memory "database" ---
+except Exception as e:
+    app.logger.critical(f"Failed to create database connection pool: {e}")
+
+
+# In-memory store for bus locations (still useful for real-time speed)
 bus_locations = {}
-bus_list = [] # NEW: To store the list of bus names
-
-# --- Server Routes ---
 
 @app.route('/')
 def index():
-    return "Hello, World! The Bus Tracker server is running."
+    return "Hello, World! The GPS server with DB connection is running."
 
-# --- Bus List Management (for Admin Page) ---
 
-@app.route('/buses', methods=['GET'])
-def get_buses():
-    app.logger.info(f"GET_BUSES_SUCCESS: Sent bus list: {bus_list}")
-    return jsonify(bus_list)
-
-@app.route('/buses', methods=['POST'])
-def add_bus():
-    data = request.get_json()
-    if not data or 'name' not in data:
-        return jsonify({"error": "Bus name is required"}), 400
-    
-    bus_name = data['name']
-    if bus_name not in bus_list:
-        bus_list.append(bus_name)
-        app.logger.info(f"ADD_BUS_SUCCESS: Added '{bus_name}'. Current list: {bus_list}")
-    else:
-        app.logger.info(f"ADD_BUS_FAIL: '{bus_name}' already exists.")
-        
-    return jsonify({"message": f"Bus '{bus_name}' processed.", "buses": bus_list}), 200
-
-# --- Routes for Bus Location Tracking ---
+# --- Location Endpoints (Real-time, no DB needed for this part) ---
 
 @app.route('/location', methods=['POST'])
 def receive_location():
     data = request.get_json()
-    if not data or not all(k in data for k in ['bus_id', 'lat', 'lon']):
-        return "Bad Request: Incomplete data provided.", 400
-
-    bus_id = data['bus_id']
+    bus_id = data.get('bus_id')
     lat = data.get('lat')
     lon = data.get('lon')
 
+    if not all([bus_id, lat, lon]):
+        return "Bad Request: Incomplete data provided.", 400
+
     bus_locations[bus_id] = {'lat': lat, 'lon': lon}
-    app.logger.info(f"SUCCESS: Received location for Bus {bus_id}: Lat={lat}, Lon={lon}")
+    app.logger.info(f"Received location for Bus {bus_id}: Lat={lat}, Lon={lon}")
     return "Location received", 200
 
 @app.route('/get_location', methods=['GET'])
@@ -80,4 +71,35 @@ def get_location():
         return jsonify(location)
     else:
         return jsonify({"error": f"No location found for bus {bus_id}."}), 404
+
+
+# --- Bus Management Endpoints (Now connected to DB) ---
+
+@app.route('/buses', methods=['GET', 'POST'])
+def manage_buses():
+    conn = app.db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            if request.method == 'POST':
+                data = request.get_json()
+                bus_name = data.get('name')
+                if not bus_name:
+                    return jsonify({"error": "Bus name is required"}), 400
+                
+                # Insert new bus and handle potential duplicates
+                cur.execute("INSERT INTO buses (name) VALUES (%s) ON CONFLICT (name) DO NOTHING;", (bus_name,))
+                conn.commit()
+                app.logger.info(f"Added or found bus: {bus_name}")
+
+            # For both POST and GET, return the full, updated list
+            cur.execute("SELECT name FROM buses ORDER BY name;")
+            buses = [row[0] for row in cur.fetchall()]
+            return jsonify(buses)
+
+    except Exception as e:
+        conn.rollback()
+        app.logger.error(f"Database error in /buses: {e}")
+        return jsonify({"error": "A database error occurred."}), 500
+    finally:
+        app.db_pool.putconn(conn)
 
