@@ -22,18 +22,18 @@ CORS(app, origins=[
     "null"
 ])
 
-# --- Database Connection ---
-try:
-    db_url = os.environ.get("DATABASE_URL")
-    if not db_url:
-        app.logger.critical("DATABASE_URL environment variable not set.")
-        # This will cause the app to fail to start, which is intended.
-    else:
-        app.db_pool = psycopg2.pool.SimpleConnectionPool(1, 5, dsn=db_url)
-        app.logger.info("Database connection pool created successfully.")
+# --- Database Connection (Robust version) ---
+db_url = os.environ.get("DATABASE_URL")
+if not db_url:
+    app.logger.critical("FATAL: DATABASE_URL environment variable not set.")
+    sys.exit("FATAL: DATABASE_URL not found.")
 
+try:
+    app.db_pool = psycopg2.pool.SimpleConnectionPool(1, 5, dsn=db_url)
+    app.logger.info("Database connection pool created successfully.")
 except Exception as e:
-    app.logger.critical(f"Failed to create database connection pool: {e}")
+    app.logger.critical(f"FATAL: Failed to create database connection pool: {e}")
+    sys.exit("FATAL: Database connection failed.")
 
 
 # In-memory store for bus locations (still useful for real-time speed)
@@ -86,12 +86,10 @@ def manage_buses():
                 if not bus_name:
                     return jsonify({"error": "Bus name is required"}), 400
                 
-                # Insert new bus and handle potential duplicates
                 cur.execute("INSERT INTO buses (name) VALUES (%s) ON CONFLICT (name) DO NOTHING;", (bus_name,))
                 conn.commit()
                 app.logger.info(f"Added or found bus: {bus_name}")
 
-            # For both POST and GET, return the full, updated list
             cur.execute("SELECT name FROM buses ORDER BY name;")
             buses = [row[0] for row in cur.fetchall()]
             return jsonify(buses)
@@ -101,5 +99,6 @@ def manage_buses():
         app.logger.error(f"Database error in /buses: {e}")
         return jsonify({"error": "A database error occurred."}), 500
     finally:
-        app.db_pool.putconn(conn)
+        if conn:
+            app.db_pool.putconn(conn)
 
