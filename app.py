@@ -1,13 +1,11 @@
-# Base Imports
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import logging
 import sys
 import os
-
-# Database Imports
 import psycopg2
 from psycopg2 import pool
+from psycopg2.extras import DictCursor
 
 app = Flask(__name__)
 
@@ -25,36 +23,43 @@ CORS(app, origins=[
     "null"
 ])
 
-# --- Database Connection Pool ---
+# --- Database Connection ---
 db_url = os.environ.get("DATABASE_URL")
 if not db_url:
     app.logger.critical("FATAL: DATABASE_URL environment variable not set.")
+    # In a real app, you might want a more graceful exit
+    # For this educational project, exiting is fine.
     sys.exit("FATAL: DATABASE_URL not found.")
 
 try:
+    # Use a connection pool
     app.db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, dsn=db_url)
     app.logger.info("Database connection pool created successfully.")
-except Exception as e:
-    app.logger.critical(f"FATAL: Failed to create database connection pool: {e}")
+except psycopg2.OperationalError as e:
+    app.logger.critical(f"FATAL: Database connection failed: {e}")
     sys.exit("FATAL: Database connection failed.")
 
-# In-memory store for bus locations (for real-time speed)
+
+# --- In-memory store (still useful for high-frequency location updates) ---
 bus_locations = {}
 
 @app.route('/')
 def index():
-    return "Hello, World! The GPS server with DB and Route Management is running."
+    return "Hello, World! The GPS server with DB connection is running."
 
-# --- Location Endpoints ---
+# --- Location Endpoints (Real-time, no DB needed for this part) ---
 @app.route('/location', methods=['POST'])
 def receive_location():
     data = request.get_json()
     bus_id = data.get('bus_id')
     lat = data.get('lat')
     lon = data.get('lon')
+
     if not all([bus_id, lat, lon]):
         return "Bad Request: Incomplete data provided.", 400
+
     bus_locations[bus_id] = {'lat': lat, 'lon': lon}
+    app.logger.info(f"Received location for Bus {bus_id}: Lat={lat}, Lon={lon}")
     return "Location received", 200
 
 @app.route('/get_location', methods=['GET'])
@@ -62,29 +67,37 @@ def get_location():
     bus_id = request.args.get('bus_id')
     if not bus_id:
         return jsonify({"error": "Please provide a bus_id parameter."}), 400
+
     location = bus_locations.get(bus_id)
     if location:
         return jsonify(location)
     else:
+        # FUTURE: We could check the database for the last known location here
         return jsonify({"error": f"No location found for bus {bus_id}."}), 404
 
-# --- Bus Management Endpoints ---
+
+# --- Bus Management ---
 @app.route('/buses', methods=['GET', 'POST'])
 def manage_buses():
     conn = None
     try:
         conn = app.db_pool.getconn()
-        with conn.cursor() as cur:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
             if request.method == 'POST':
                 data = request.get_json()
                 bus_name = data.get('name')
                 if not bus_name:
                     return jsonify({"error": "Bus name is required"}), 400
+                
                 cur.execute("INSERT INTO buses (name) VALUES (%s) ON CONFLICT (name) DO NOTHING;", (bus_name,))
                 conn.commit()
+                app.logger.info(f"Added or found bus: {bus_name}")
+
+            # Both POST and GET will return the full, updated list
             cur.execute("SELECT id, name FROM buses ORDER BY name;")
-            buses = [{'id': row[0], 'name': row[1]} for row in cur.fetchall()]
+            buses = [dict(row) for row in cur.fetchall()]
             return jsonify(buses)
+
     except Exception as e:
         if conn: conn.rollback()
         app.logger.error(f"Database error in /buses: {e}")
@@ -93,50 +106,66 @@ def manage_buses():
         if conn:
             app.db_pool.putconn(conn)
 
-# --- NEW: Route Management Endpoints ---
+# --- Route and Stop Management ---
 
 @app.route('/routes', methods=['GET', 'POST'])
 def manage_routes():
     conn = None
     try:
         conn = app.db_pool.getconn()
-        with conn.cursor() as cur:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
             if request.method == 'POST':
                 data = request.get_json()
                 route_name = data.get('name')
                 if not route_name:
                     return jsonify({"error": "Route name is required"}), 400
-                
-                cur.execute("INSERT INTO routes (name) VALUES (%s) RETURNING id, name;", (route_name,))
+                cur.execute("INSERT INTO routes (name) VALUES (%s) RETURNING id;", (route_name,))
+                new_route_id = cur.fetchone()['id']
                 conn.commit()
-                new_route = cur.fetchone()
-                return jsonify({'id': new_route[0], 'name': new_route[1], 'stops': []}), 201
-
-            # On GET request, fetch all routes and their stops
-            cur.execute("SELECT id, name FROM routes ORDER BY name;")
-            routes = cur.fetchall()
+                app.logger.info(f"Created route '{route_name}' with ID {new_route_id}")
+                return jsonify({"id": new_route_id, "name": route_name, "stops": []}), 201
             
-            routes_with_stops = []
-            for route_row in routes:
-                route_id = route_row[0]
-                route_name = route_row[1]
+            else: # GET request - This is the corrected, efficient version
+                sql = """
+                    SELECT
+                        r.id as route_id,
+                        r.name as route_name,
+                        s.sequence as stop_sequence,
+                        s.address as stop_address
+                    FROM
+                        routes r
+                    LEFT JOIN
+                        stops s ON r.id = s.route_id
+                    ORDER BY
+                        r.id, s.sequence;
+                """
+                cur.execute(sql)
+                results = cur.fetchall()
                 
-                cur.execute("SELECT address, sequence FROM stops WHERE route_id = %s ORDER BY sequence;", (route_id,))
-                stops_data = cur.fetchall()
-                stops = [{'address': stop[0], 'sequence': stop[1]} for stop in stops_data]
+                # Process the flat list into a nested structure
+                routes_map = {}
+                for row in results:
+                    route_id = row['route_id']
+                    if route_id not in routes_map:
+                        routes_map[route_id] = {
+                            'id': route_id,
+                            'name': row['route_name'],
+                            'stops': []
+                        }
+                    # Add stop only if it exists (LEFT JOIN can produce nulls for routes with no stops)
+                    if row['stop_sequence'] is not None:
+                        routes_map[route_id]['stops'].append({
+                            'sequence': row['stop_sequence'],
+                            'address': row['stop_address']
+                        })
                 
-                routes_with_stops.append({
-                    'id': route_id,
-                    'name': route_name,
-                    'stops': stops
-                })
-            
-            return jsonify(routes_with_stops)
+                # Convert the map to a list for the final JSON response
+                return jsonify(list(routes_map.values()))
 
     except Exception as e:
         if conn: conn.rollback()
         app.logger.error(f"Database error in /routes: {e}")
-        return jsonify({"error": "A database error occurred."}), 500
+        return jsonify({"error": f"A database error occurred: {e}"}), 500
     finally:
         if conn:
             app.db_pool.putconn(conn)
@@ -147,25 +176,34 @@ def add_stop_to_route(route_id):
     conn = None
     try:
         conn = app.db_pool.getconn()
-        data = request.get_json()
-        address = data.get('address')
-        if not address:
-            return jsonify({"error": "Address is required"}), 400
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            data = request.get_json()
+            address = data.get('address')
+            if not address:
+                return jsonify({"error": "Address is required"}), 400
 
-        with conn.cursor() as cur:
             # Get the next sequence number for this route
-            cur.execute("SELECT COALESCE(MAX(sequence), 0) + 1 FROM stops WHERE route_id = %s;", (route_id,))
-            next_sequence = cur.fetchone()[0]
-
-            cur.execute("INSERT INTO stops (route_id, address, sequence) VALUES (%s, %s, %s);", (route_id, address, next_sequence))
+            cur.execute("SELECT COALESCE(MAX(sequence), 0) + 1 as next_seq FROM stops WHERE route_id = %s;", (route_id,))
+            next_seq = cur.fetchone()['next_seq']
+            
+            cur.execute(
+                "INSERT INTO stops (route_id, address, sequence) VALUES (%s, %s, %s) RETURNING sequence, address;",
+                (route_id, address, next_seq)
+            )
+            new_stop = dict(cur.fetchone())
             conn.commit()
-            return jsonify({"success": True, "message": f"Stop added to route {route_id}"}), 201
+            app.logger.info(f"Added stop '{address}' to route {route_id} at sequence {next_seq}")
+            return jsonify(new_stop), 201
 
     except Exception as e:
         if conn: conn.rollback()
-        app.logger.error(f"Database error in /routes/stops: {e}")
+        app.logger.error(f"Database error in /routes/.../stops: {e}")
         return jsonify({"error": "A database error occurred."}), 500
     finally:
         if conn:
             app.db_pool.putconn(conn)
+
+if __name__ == '__main__':
+    # This is for local development and won't be used by Render
+    app.run(debug=True, port=5001)
 
