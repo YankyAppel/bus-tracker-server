@@ -15,10 +15,10 @@ handler.setLevel(logging.INFO)
 app.logger.addHandler(handler)
 app.logger.setLevel(logging.INFO)
 
-# --- CORS SETUP ---
+# --- CORS SETUP (CORRECTED) ---
 CORS(app, origins=[
     "https://gleaming-brigadeiros-6bbd55.netlify.app",  # Parent App
-    "https://darling-ganache-26a871.netlify.app",       # Driver App
+    "https://darling-ganache-26a871.netlify.app",       # Driver App (THIS IS THE FIX)
     "https://chimerical-salamander-bf8231.netlify.app", # Admin App
     "null"
 ])
@@ -27,12 +27,9 @@ CORS(app, origins=[
 db_url = os.environ.get("DATABASE_URL")
 if not db_url:
     app.logger.critical("FATAL: DATABASE_URL environment variable not set.")
-    # In a real app, you might want a more graceful exit
-    # For this educational project, exiting is fine.
     sys.exit("FATAL: DATABASE_URL not found.")
 
 try:
-    # Use a connection pool
     app.db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, dsn=db_url)
     app.logger.info("Database connection pool created successfully.")
 except psycopg2.OperationalError as e:
@@ -40,14 +37,14 @@ except psycopg2.OperationalError as e:
     sys.exit("FATAL: Database connection failed.")
 
 
-# --- In-memory store (still useful for high-frequency location updates) ---
+# --- In-memory store ---
 bus_locations = {}
 
 @app.route('/')
 def index():
     return "Hello, World! The GPS server with DB connection is running."
 
-# --- Location Endpoints (Real-time, no DB needed for this part) ---
+# --- Location Endpoints ---
 @app.route('/location', methods=['POST'])
 def receive_location():
     data = request.get_json()
@@ -72,7 +69,6 @@ def get_location():
     if location:
         return jsonify(location)
     else:
-        # FUTURE: We could check the database for the last known location here
         return jsonify({"error": f"No location found for bus {bus_id}."}), 404
 
 
@@ -93,7 +89,6 @@ def manage_buses():
                 conn.commit()
                 app.logger.info(f"Added or found bus: {bus_name}")
 
-            # Both POST and GET will return the full, updated list
             cur.execute("SELECT id, name FROM buses ORDER BY name;")
             buses = [dict(row) for row in cur.fetchall()]
             return jsonify(buses)
@@ -125,24 +120,18 @@ def manage_routes():
                 app.logger.info(f"Created route '{route_name}' with ID {new_route_id}")
                 return jsonify({"id": new_route_id, "name": route_name, "stops": []}), 201
             
-            else: # GET request - This is the corrected, efficient version
+            else: # GET request
                 sql = """
                     SELECT
-                        r.id as route_id,
-                        r.name as route_name,
-                        s.sequence as stop_sequence,
-                        s.address as stop_address
-                    FROM
-                        routes r
-                    LEFT JOIN
-                        stops s ON r.id = s.route_id
-                    ORDER BY
-                        r.id, s.sequence;
+                        r.id as route_id, r.name as route_name,
+                        s.sequence as stop_sequence, s.address as stop_address
+                    FROM routes r
+                    LEFT JOIN stops s ON r.id = s.route_id
+                    ORDER BY r.id, s.sequence;
                 """
                 cur.execute(sql)
                 results = cur.fetchall()
                 
-                # Process the flat list into a nested structure
                 routes_map = {}
                 for row in results:
                     route_id = row['route_id']
@@ -152,14 +141,12 @@ def manage_routes():
                             'name': row['route_name'],
                             'stops': []
                         }
-                    # Add stop only if it exists (LEFT JOIN can produce nulls for routes with no stops)
                     if row['stop_sequence'] is not None:
                         routes_map[route_id]['stops'].append({
                             'sequence': row['stop_sequence'],
                             'address': row['stop_address']
                         })
                 
-                # Convert the map to a list for the final JSON response
                 return jsonify(list(routes_map.values()))
 
     except Exception as e:
@@ -182,7 +169,6 @@ def add_stop_to_route(route_id):
             if not address:
                 return jsonify({"error": "Address is required"}), 400
 
-            # Get the next sequence number for this route
             cur.execute("SELECT COALESCE(MAX(sequence), 0) + 1 as next_seq FROM stops WHERE route_id = %s;", (route_id,))
             next_seq = cur.fetchone()['next_seq']
             
@@ -204,6 +190,5 @@ def add_stop_to_route(route_id):
             app.db_pool.putconn(conn)
 
 if __name__ == '__main__':
-    # This is for local development and won't be used by Render
     app.run(debug=True, port=5001)
 
