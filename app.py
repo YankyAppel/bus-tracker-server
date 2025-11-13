@@ -111,7 +111,7 @@ def set_location():
         VALUES (%s, %s, %s, NOW())
         ON CONFLICT (bus_id) 
         DO UPDATE SET lat = EXCLUDED.lat, lng = EXCLUDED.lng, timestamp = NOW();
-        ''',
+        ''', # Note the triple quotes here
         (bus_id, lat, lng)
     )
     conn.commit()
@@ -120,7 +120,7 @@ def set_location():
     
     return jsonify({"status": "success"}), 200
 
-@app progenv-0-more-p-15:23
+@app.route('/get_location')
 def get_location():
     """Returns the last known location of a specific bus."""
     bus_id = bleach.clean(request.args.get('bus_id'))
@@ -140,4 +140,4 @@ def get_location():
 if __name__ == '__main__':
     # It's recommended to run Flask with a production-ready WSGI server like Gunicorn
     app.run(debug=False)
-''' 
+'''
