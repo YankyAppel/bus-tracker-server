@@ -111,7 +111,7 @@ def set_location():
         VALUES (%s, %s, %s, NOW())
         ON CONFLICT (bus_id) 
         DO UPDATE SET lat = EXCLUDED.lat, lng = EXCLUDED.lng, timestamp = NOW();
-        ''', # Note the triple quotes here
+        ''',
         (bus_id, lat, lng)
     )
     conn.commit()
