@@ -1,4 +1,3 @@
-'''
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import psycopg2
@@ -7,8 +6,7 @@ import bleach
 
 app = Flask(__name__)
 
-# This is the crucial part. This list of origins will be allowed to
-# access your server.
+# Allow requests from your Netlify apps
 CORS(app, origins=[
     "https://chimerical-salamander-bf8231.netlify.app",  # Admin App
     "https://darling-ganache-26a871.netlify.app",      # Driver App
@@ -59,15 +57,17 @@ def handle_routes():
         return jsonify({"id": new_route_id}), 201
     else: # GET request
         bus_id = request.args.get('bus_id')
+        query = 'SELECT r.id, r.name, b.name as bus_name FROM routes r JOIN buses b ON r.bus_id = b.id'
+        params = []
         if bus_id:
-            cursor.execute('SELECT id, name FROM routes WHERE bus_id = %s ORDER BY name;', (bus_id,))
-        else:
-            cursor.execute('SELECT id, name FROM routes ORDER BY name;')
+            query += ' WHERE r.bus_id = %s'
+            params.append(bus_id)
+        query += ' ORDER BY r.name;'
+        cursor.execute(query, tuple(params))
         routes = cursor.fetchall()
         cursor.close()
         conn.close()
-        return jsonify({"routes": [{"id": route[0], "name": route[1]} for route in routes]})
-
+        return jsonify({"routes": [{"id": route[0], "name": route[1], "bus_name": route[2]} for route in routes]})
 
 @app.route('/stops', methods=['GET', 'POST'])
 def handle_stops():
@@ -91,8 +91,7 @@ def handle_stops():
         stops = cursor.fetchall()
         cursor.close()
         conn.close()
-        return jsonify({"stops": [{"id": stop[0], "address": stop[1]} for stop in stops]})
-
+        return jsonify({"stops": [{"id": stop[0], "address": stop[1], "sequence": stop[2]} for stop in stops]})
 
 @app.route('/set_location', methods=['POST'])
 def set_location():
@@ -101,10 +100,8 @@ def set_location():
     bus_id = bleach.clean(data['bus_id'])
     lat = data['lat']
     lng = data['lng']
-    
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Use UPSERT to handle both new and existing bus_ids
     cursor.execute(
         '''
         INSERT INTO locations (bus_id, lat, lng, timestamp) 
@@ -117,27 +114,22 @@ def set_location():
     conn.commit()
     cursor.close()
     conn.close()
-    
     return jsonify({"status": "success"}), 200
 
 @app.route('/get_location')
 def get_location():
     """Returns the last known location of a specific bus."""
     bus_id = bleach.clean(request.args.get('bus_id'))
-    
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT lat, lng, timestamp FROM locations WHERE bus_id = %s;', (bus_id,))
     location = cursor.fetchone()
     cursor.close()
     conn.close()
-    
     if location:
         return jsonify({"lat": location[0], "lng": location[1], "timestamp": location[2]})
     else:
         return jsonify({"error": "Bus location not found"}), 404
 
 if __name__ == '__main__':
-    # It's recommended to run Flask with a production-ready WSGI server like Gunicorn
     app.run(debug=False)
-'''
