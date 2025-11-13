@@ -1,6 +1,5 @@
 Flask
-requests
-gunicorn
-Flask-Cors
 psycopg2-binary
+Flask-Cors
+gunicorn
 bleach
